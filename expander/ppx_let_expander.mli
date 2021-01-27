@@ -4,6 +4,7 @@ module Extension_kind : sig
   type t =
     { do_open : bool
     ; collapse_binds : bool
+    ; ignored : bool
     }
 
   (* let%bind, let%map, etc. *)
@@ -17,6 +18,12 @@ module Extension_kind : sig
 
   (* let%bindn_open, let%mapn_open, etc. *)
   val n_open : t
+
+  (* let%seq *)
+  val seq : t
+
+  (* let%seq_open *)
+  val seq_open : t
 end
 
 type t
@@ -25,6 +32,7 @@ val ext_full_name : t -> Extension_kind.t -> label
 val bind : t
 val map : t
 val sub : t
+val seq : t
 
 (* Bind each non-wildcard variable of each pattern to the expression which
    projects the bound expression to the variable's component. *)

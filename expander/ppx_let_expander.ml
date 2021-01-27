@@ -22,12 +22,15 @@ module Extension_kind = struct
   type t =
     { do_open : bool
     ; collapse_binds : bool
+    ; ignored : bool
     }
 
-  let default = { do_open = false; collapse_binds = false }
-  let default_open = { do_open = true; collapse_binds = false }
-  let n = { do_open = false; collapse_binds = true }
-  let n_open = { do_open = true; collapse_binds = true }
+  let default = { do_open = false; collapse_binds = false; ignored = false }
+  let default_open = { do_open = true; collapse_binds = false; ignored = false }
+  let n = { do_open = false; collapse_binds = true; ignored = false }
+  let n_open = { do_open = true; collapse_binds = true; ignored = false }
+  let seq = { do_open = false; collapse_binds = false; ignored = true }
+  let seq_open = { do_open = true; collapse_binds = false; ignored = true }
 end
 
 module type Ext = sig
@@ -94,6 +97,10 @@ let qualified_return ~loc ~modul expr =
 
 let bind_apply ~op_name ~loc ~modul ~arg ~fn =
   pexp_apply ~loc (eoperator ~loc ~modul op_name) [ Nolabel, arg; Labelled "f", fn ]
+;;
+
+let bind_seq ~op_name ~loc ~modul ~arg1 ~arg2 =
+  pexp_apply ~loc (eoperator ~loc ~modul op_name) [ Nolabel, arg1; Nolabel, arg2 ]
 ;;
 
 let expand_with_tmp_vars ~loc bindings expr ~f =
@@ -188,6 +195,13 @@ let expand_let (module Ext : Ext) ~assume_exhaustive ~loc ~modul bindings body =
     maybe_destruct (module Ext) ~assume_exhaustive ~loc ~modul ~lhs:nested_patterns ~body
   in
   bind_apply ~op_name:Ext.name ~loc ~modul ~arg:nested_boths ~fn
+;;
+
+let expand_lets (module Ext : Ext) ~assume_exhaustive:_ ~loc ~modul bindings body =
+  if List.length bindings = 0
+  then invalid_arg "expand_lets: list of bindings must be non-empty";
+  let vb = List.hd_exn bindings in
+  bind_seq ~op_name:Ext.name ~loc ~modul ~arg1:vb.pvb_expr ~arg2:body
 ;;
 
 let expand_match (module Ext : Ext) ~extension_kind ~loc ~modul expr cases =
@@ -487,8 +501,18 @@ let expand (module Ext : Ext) extension_kind ?(assume_exhaustive = true) ~modul 
               maybe_open ~extension_kind ~to_open:(open_on_rhs ~modul) vb.pvb_expr
           })
       in
+      if extension_kind.ignored then begin
+        match bindings with
+        | [ vb ] when (match vb.pvb_pat.ppat_desc with Ppat_any -> true | _ -> false) ->
+          ()
+        | _ ->
+          let ext_full_name = ext_full_name (module Ext) extension_kind in
+          Location.raise_errorf ~loc "'let%%%s' should only bind wildcard" ext_full_name
+      end;
       let f =
-        if extension_kind.collapse_binds
+        if extension_kind.ignored
+        then expand_lets (module Ext) ~assume_exhaustive ~modul
+        else if extension_kind.collapse_binds
         then expand_letn (module Ext) ~assume_exhaustive ~modul
         else expand_let (module Ext) ~assume_exhaustive ~modul
       in
@@ -521,3 +545,24 @@ let expand (module Ext : Ext) extension_kind ?(assume_exhaustive = true) ~modul 
 let sub = (module Sub : Ext)
 let map = (module Map : Ext)
 let bind = (module Bind : Ext)
+
+module Seq : Ext = struct
+  let name = "seq"
+
+  let disallow_expression _ = function
+    | Pexp_let (Nonrecursive, _ :: _ :: _, _) ->
+      Error "let%seq should not be used with 'and'."
+    | Pexp_while (_, _) -> Error "while%seq is not supported"
+    | Pexp_ifthenelse (_, _, _) -> Error "if%seq is not supported"
+    | Pexp_match (_, _) -> Error "match%seq is not supported"
+    | _ -> Ok ()
+  ;;
+
+  let destruct ~assume_exhaustive:_ ~loc:_ ~modul:_ ~lhs:_ ~rhs:_ ~body:_ = None
+
+  let expand_match ~loc:_ ~modul:_ _ _ =
+    assert false
+  ;;
+end
+
+let seq = (module Seq : Ext)
